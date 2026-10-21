@@ -1,7 +1,17 @@
-# Pendientes
+# Estado de funciones
 
-## Convertir texto copiado de documentos a Markdown
+## Implementado
 
-Agregar una acción para pegar texto desde el portapapeles —incluido texto copiado desde un archivo DOC/DOCX o PDF— y convertirlo automáticamente a un documento `.md` listo para guardar.
+### Importar directamente DOC/DOCX/PDF
 
-Al implementarla, intentar conservar títulos, listas, enlaces y párrafos cuando el formato del portapapeles los incluya. Definir entonces si la primera versión acepta solo texto copiado o también permite importar directamente archivos DOC/DOCX/PDF.
+Se pueden abrir documentos DOC y DOCX, y PDF, desde el selector de archivos o arrastrándolos a la ventana. El texto extraído se convierte a Markdown y se ofrece guardar con el nombre del documento original. Los PDF escaneados sin texto seleccionable muestran un aviso porque todavía no tienen OCR.
+
+### Convertir texto copiado de documentos a Markdown
+
+La acción **Pegar** lee el portapapeles y convierte el contenido a Markdown. Cuando hay HTML o RTF, conserva títulos, párrafos, listas, enlaces y estilos en línea disponibles; si solo hay texto plano, organiza saltos de línea y viñetas comunes. Al terminar, abre el diálogo para guardar un archivo `.md`; si se cancela, el contenido sigue disponible para guardarlo después.
+
+Esta opción complementa la importación directa descrita arriba: sirve para convertir el contenido seleccionado en cualquier otra aplicación.
+
+## Pendiente
+
+- Añadir OCR para extraer texto de PDF escaneados.

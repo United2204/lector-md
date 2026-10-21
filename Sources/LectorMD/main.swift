@@ -189,7 +189,7 @@ private enum DocumentOutput {
     static func html(_ document: MarkdownDocument, fileName: String?) -> String {
         let body: String
         if document.blocks.isEmpty {
-            body = #"<section class="welcome"><div class="welcome-icon">✦</div><p class="eyebrow">LECTOR MD</p><h1>Tu Markdown, con espacio para respirar.</h1><p>Abre un archivo .md o arrástralo hasta aquí para ver una versión limpia, lista para leer, imprimir o compartir.</p></section>"#
+            body = #"<section class="welcome"><div class="welcome-icon">✦</div><p class="eyebrow">LECTOR MD</p><h1>Tus documentos, con espacio para respirar.</h1><p>Abre un Markdown, un documento Word o un PDF; pega texto copiado o arrástralo hasta aquí para verlo en un formato limpio, listo para leer, imprimir o compartir.</p></section>"#
         } else {
             body = document.blocks.map(Self.htmlBlock).joined(separator: "\n")
         }
@@ -454,7 +454,7 @@ private enum DocumentOutput {
 }
 
 private final class DropWebView: WKWebView {
-    var onMarkdownDrop: ((URL) -> Void)?
+    var onDocumentDrop: ((URL) -> Void)?
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         return .copy
@@ -462,8 +462,8 @@ private final class DropWebView: WKWebView {
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         guard let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL],
-              let file = urls.first(where: { ["md", "markdown", "mdown"].contains($0.pathExtension.lowercased()) }) else { return false }
-        onMarkdownDrop?(file)
+              let file = urls.first(where: { DocumentInputType.classify($0) != nil }) else { return false }
+        onDocumentDrop?(file)
         return true
     }
 }
@@ -609,11 +609,21 @@ private enum PDFPageComposer {
 
 private final class MainController: NSViewController, WKNavigationDelegate {
     private let webView = DropWebView(frame: .zero)
-    private let statusLabel = NSTextField(labelWithString: "Abre un archivo .md para empezar")
+    private let statusLabel = NSTextField(labelWithString: "Abre un documento o pega texto para empezar")
     private var markdown = ""
     private var currentFile: URL?
+    private var documentBaseName = "Documento pegado"
+    private var hasDocument = false
     private var exportButtons: [NSButton] = []
+    private var pasteButton: NSButton?
+    private var saveMarkdownButton: NSButton?
+    private var htmlMarkdownImporter: ClipboardHTMLToMarkdownConverter?
     private var isDocumentReady = false
+
+    private var displayedFileName: String? {
+        guard hasDocument else { return nil }
+        return currentFile?.lastPathComponent ?? "\(documentBaseName).md"
+    }
 
     override func loadView() {
         view = NSView()
@@ -645,13 +655,20 @@ private final class MainController: NSViewController, WKNavigationDelegate {
 
         let spacer = NSView()
         let open = button("Abrir", symbol: "folder", action: #selector(openDocument))
+        let paste = button("Pegar", symbol: "doc.on.clipboard", action: #selector(pasteAndConvert))
+        paste.toolTip = "Pegar texto copiado y convertirlo a Markdown"
+        pasteButton = paste
+        let saveMarkdown = button("Guardar .md", symbol: "square.and.arrow.down", action: #selector(saveMarkdown))
+        saveMarkdown.toolTip = "Guardar una copia del documento como Markdown"
+        saveMarkdownButton = saveMarkdown
+        saveMarkdown.isEnabled = false
         let print = button("Imprimir", symbol: "printer", action: #selector(printDocument))
         let pdf = button("PDF", symbol: "arrow.down.to.line", action: #selector(exportPDF))
         let docx = button("DOCX", symbol: "doc.richtext", action: #selector(exportDOCX))
         exportButtons = [print, pdf, docx]
         exportButtons.forEach { $0.isEnabled = false }
 
-        let controls = NSStackView(views: [open, print, pdf, docx])
+        let controls = NSStackView(views: [open, paste, saveMarkdown, print, pdf, docx])
         controls.orientation = .horizontal
         controls.alignment = .centerY
         controls.spacing = 8
@@ -669,7 +686,7 @@ private final class MainController: NSViewController, WKNavigationDelegate {
         webView.translatesAutoresizingMaskIntoConstraints = false
         webView.navigationDelegate = self
         webView.underPageBackgroundColor = NSColor(calibratedRed: 0.949, green: 0.945, blue: 0.925, alpha: 1)
-        webView.onMarkdownDrop = { [weak self] url in self?.open(url) }
+        webView.onDocumentDrop = { [weak self] url in self?.open(url) }
 
         let footer = NSView()
         footer.translatesAutoresizingMaskIntoConstraints = false
@@ -711,20 +728,41 @@ private final class MainController: NSViewController, WKNavigationDelegate {
 
     @objc func openDocument() {
         let panel = NSOpenPanel()
-        panel.title = "Abrir Markdown"
-        panel.message = "Elige un archivo para leerlo con formato."
+        panel.title = "Abrir documento"
+        panel.message = "Elige un Markdown para leerlo o un documento Word/PDF para convertirlo a Markdown."
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
+        panel.allowedContentTypes = DocumentInputType.allowedContentTypes
         guard panel.runModal() == .OK, let url = panel.url else { return }
         open(url)
     }
 
     func open(_ url: URL) {
+        htmlMarkdownImporter = nil
+        pasteButton?.isEnabled = true
+        guard let type = DocumentInputType.classify(url) else {
+            showError("Formato no compatible", detail: "Lector MD puede abrir Markdown, documentos DOC/DOCX y archivos PDF.")
+            return
+        }
+
+        switch type {
+        case .markdown:
+            openMarkdown(url)
+        case .word:
+            openWordDocument(url)
+        case .pdf:
+            openPDFDocument(url)
+        }
+    }
+
+    private func openMarkdown(_ url: URL) {
         do {
             let content = try String(contentsOf: url, encoding: .utf8)
             markdown = content
             currentFile = url
+            documentBaseName = url.deletingPathExtension().lastPathComponent
+            hasDocument = true
             view.window?.title = "\(url.lastPathComponent) — Lector MD"
             render()
             let lines = content.components(separatedBy: .newlines).count
@@ -734,28 +772,170 @@ private final class MainController: NSViewController, WKNavigationDelegate {
         }
     }
 
+    private func openPDFDocument(_ url: URL) {
+        do {
+            let converted = try DirectDocumentImporter.markdownFromPDF(at: url)
+            prepareImportedMarkdown(
+                converted,
+                status: "PDF convertido a Markdown",
+                baseName: url.deletingPathExtension().lastPathComponent
+            )
+        } catch {
+            showError("No se pudo importar el PDF", detail: error.localizedDescription)
+        }
+    }
+
+    private func openWordDocument(_ url: URL) {
+        do {
+            let content = try DirectDocumentImporter.wordContent(at: url)
+            statusLabel.stringValue = "Convirtiendo documento Word…"
+            let importer = ClipboardHTMLToMarkdownConverter()
+            htmlMarkdownImporter = importer
+            importer.convert(content.html) { [weak self, weak importer] result in
+                DispatchQueue.main.async {
+                    guard let self, let importer, self.htmlMarkdownImporter === importer else { return }
+                    self.htmlMarkdownImporter = nil
+                    switch result {
+                    case .success(let converted):
+                        self.prepareImportedMarkdown(
+                            converted,
+                            status: "Documento Word convertido a Markdown",
+                            baseName: url.deletingPathExtension().lastPathComponent
+                        )
+                    case .failure(let error):
+                        let fallback = PlainTextMarkdownConverter.convert(content.plainText)
+                        if !fallback.isEmpty {
+                            self.prepareImportedMarkdown(
+                                fallback,
+                                status: "Documento Word convertido con formato básico",
+                                baseName: url.deletingPathExtension().lastPathComponent
+                            )
+                        } else {
+                            self.showError("No se pudo convertir el documento Word", detail: error.localizedDescription)
+                        }
+                    }
+                }
+            }
+        } catch {
+            showError("No se pudo abrir el documento Word", detail: error.localizedDescription)
+        }
+    }
+
     private func render() {
         isDocumentReady = false
         setExportButtonsEnabled(false)
-        webView.loadHTMLString(DocumentOutput.html(MarkdownDocument(markdown), fileName: currentFile?.lastPathComponent), baseURL: nil)
+        saveMarkdownButton?.isEnabled = false
+        webView.loadHTMLString(DocumentOutput.html(MarkdownDocument(markdown), fileName: displayedFileName), baseURL: nil)
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        guard let currentFile else { return }
         isDocumentReady = true
-        setExportButtonsEnabled(true)
-        statusLabel.stringValue = "\(currentFile.lastPathComponent)  ·  Listo para exportar"
+        setExportButtonsEnabled(hasDocument)
+        saveMarkdownButton?.isEnabled = hasDocument
+        guard hasDocument else {
+            statusLabel.stringValue = "Abre un documento o pega texto para empezar"
+            return
+        }
+        statusLabel.stringValue = "\(displayedFileName ?? documentBaseName)  ·  Listo para exportar"
     }
 
     private func setExportButtonsEnabled(_ enabled: Bool) {
         exportButtons.forEach { $0.isEnabled = enabled }
     }
 
+    @objc func pasteAndConvert() {
+        htmlMarkdownImporter = nil
+        pasteButton?.isEnabled = true
+        guard let source = ClipboardMarkdownSource.read() else {
+            showError("No hay texto para pegar", detail: "Copia texto de un documento o PDF y vuelve a intentarlo.")
+            return
+        }
+
+        switch source {
+        case .plainText(let text):
+            prepareImportedMarkdown(
+                PlainTextMarkdownConverter.convert(text),
+                status: "Texto del portapapeles convertido"
+            )
+        case .html(let html, let fallbackText):
+            statusLabel.stringValue = "Convirtiendo texto del portapapeles…"
+            pasteButton?.isEnabled = false
+            let importer = ClipboardHTMLToMarkdownConverter()
+            htmlMarkdownImporter = importer
+            importer.convert(html) { [weak self, weak importer] result in
+                DispatchQueue.main.async {
+                    guard let self, let importer, self.htmlMarkdownImporter === importer else { return }
+                    self.htmlMarkdownImporter = nil
+                    self.pasteButton?.isEnabled = true
+                    switch result {
+                    case .success(let converted):
+                        self.prepareImportedMarkdown(converted, status: "Texto enriquecido convertido")
+                    case .failure(let error):
+                        if let fallbackText {
+                            let converted = PlainTextMarkdownConverter.convert(fallbackText)
+                            if !converted.isEmpty {
+                                self.prepareImportedMarkdown(converted, status: "Texto convertido con formato básico")
+                                return
+                            }
+                        }
+                        self.showError("No se pudo convertir el contenido copiado", detail: error.localizedDescription)
+                    }
+                }
+            }
+        }
+    }
+
+    private func prepareImportedMarkdown(_ content: String, status: String, baseName: String = "Documento pegado") {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            showError("No se encontró texto para convertir", detail: "Prueba copiando texto y no solo una imagen o un objeto.")
+            return
+        }
+
+        markdown = trimmed + "\n"
+        currentFile = nil
+        documentBaseName = baseName
+        hasDocument = true
+        view.window?.title = "\(documentBaseName) — Lector MD"
+        render()
+        statusLabel.stringValue = "\(status) · listo para guardar como .md"
+        saveMarkdown()
+    }
+
+    @objc func saveMarkdown() {
+        guard hasDocument else { return }
+        let panel = NSSavePanel()
+        panel.title = "Guardar como Markdown"
+        panel.prompt = "Guardar"
+        panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
+        let baseName = currentFile?.deletingPathExtension().lastPathComponent ?? documentBaseName
+        panel.nameFieldStringValue = "\(baseName).md"
+        guard panel.runModal() == .OK, let selectedURL = panel.url else {
+            statusLabel.stringValue = "\(documentBaseName).md · listo para guardar"
+            return
+        }
+
+        var url = selectedURL
+        if url.pathExtension.lowercased() != "md" {
+            url.deletePathExtension()
+            url.appendPathExtension("md")
+        }
+        do {
+            try markdown.write(to: url, atomically: true, encoding: .utf8)
+            currentFile = url
+            documentBaseName = url.deletingPathExtension().lastPathComponent
+            view.window?.title = "\(url.lastPathComponent) — Lector MD"
+            statusLabel.stringValue = "Markdown guardado · \(url.lastPathComponent)"
+        } catch {
+            showError("No se pudo guardar el Markdown", detail: error.localizedDescription)
+        }
+    }
+
     @objc private func exportPDF() {
-        guard currentFile != nil, isDocumentReady else { return }
+        guard hasDocument, isDocumentReady else { return }
         let panel = NSSavePanel()
         panel.title = "Guardar como PDF"
-        panel.nameFieldStringValue = currentFile!.deletingPathExtension().lastPathComponent + ".pdf"
+        panel.nameFieldStringValue = documentBaseName + ".pdf"
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
         setExportButtonsEnabled(false)
@@ -814,17 +994,17 @@ private final class MainController: NSViewController, WKNavigationDelegate {
     }
 
     @objc private func printDocument() {
-        guard currentFile != nil, isDocumentReady else { return }
+        guard hasDocument, isDocumentReady else { return }
         let operation = webView.printOperation(with: NSPrintInfo.shared)
         operation.printPanel.options.insert(.showsPaperSize)
         operation.run()
     }
 
     @objc private func exportDOCX() {
-        guard currentFile != nil, isDocumentReady else { return }
+        guard hasDocument, isDocumentReady else { return }
         let panel = NSSavePanel()
         panel.title = "Guardar como Word"
-        panel.nameFieldStringValue = currentFile!.deletingPathExtension().lastPathComponent + ".docx"
+        panel.nameFieldStringValue = documentBaseName + ".docx"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             try DocumentOutput.docx(MarkdownDocument(markdown), to: url)
@@ -896,6 +1076,21 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         let fileMenu = NSMenu(title: "Archivo")
         let openItem = fileMenu.addItem(withTitle: "Abrir…", action: #selector(openDocument), keyEquivalent: "o")
         openItem.target = self
+        fileMenu.addItem(NSMenuItem.separator())
+        let pasteItem = fileMenu.addItem(
+            withTitle: "Pegar y convertir desde el portapapeles",
+            action: #selector(pasteDocument),
+            keyEquivalent: "v"
+        )
+        pasteItem.target = self
+        pasteItem.keyEquivalentModifierMask = [.command, .shift]
+        let saveMarkdownItem = fileMenu.addItem(
+            withTitle: "Guardar como Markdown…",
+            action: #selector(saveMarkdownDocument),
+            keyEquivalent: "s"
+        )
+        saveMarkdownItem.target = self
+        saveMarkdownItem.keyEquivalentModifierMask = [.command, .shift]
         fileItem.submenu = fileMenu
         NSApp.mainMenu = menu
     }
@@ -903,6 +1098,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func openDocument() {
         ensureWindow()
         (window?.contentViewController as? MainController)?.openDocument()
+    }
+
+    @objc private func pasteDocument() {
+        ensureWindow()
+        (window?.contentViewController as? MainController)?.pasteAndConvert()
+    }
+
+    @objc private func saveMarkdownDocument() {
+        (window?.contentViewController as? MainController)?.saveMarkdown()
     }
 }
 
