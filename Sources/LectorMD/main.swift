@@ -617,6 +617,7 @@ private final class MainController: NSViewController, WKNavigationDelegate {
     private var exportButtons: [NSButton] = []
     private var pasteButton: NSButton?
     private var saveMarkdownButton: NSButton?
+    private var updateButton: NSButton?
     private var htmlMarkdownImporter: ClipboardHTMLToMarkdownConverter?
     private var isDocumentReady = false
 
@@ -665,10 +666,15 @@ private final class MainController: NSViewController, WKNavigationDelegate {
         let print = button("Imprimir", symbol: "printer", action: #selector(printDocument))
         let pdf = button("PDF", symbol: "arrow.down.to.line", action: #selector(exportPDF))
         let docx = button("DOCX", symbol: "doc.richtext", action: #selector(exportDOCX))
+        let updates = button("", symbol: "arrow.clockwise", action: #selector(checkForUpdates))
+        updates.imagePosition = .imageOnly
+        updates.toolTip = "Buscar actualizaciones en GitHub"
+        updates.setAccessibilityLabel("Buscar actualizaciones")
+        updateButton = updates
         exportButtons = [print, pdf, docx]
         exportButtons.forEach { $0.isEnabled = false }
 
-        let controls = NSStackView(views: [open, paste, saveMarkdown, print, pdf, docx])
+        let controls = NSStackView(views: [open, paste, saveMarkdown, print, pdf, docx, updates])
         controls.orientation = .horizontal
         controls.alignment = .centerY
         controls.spacing = 8
@@ -841,6 +847,65 @@ private final class MainController: NSViewController, WKNavigationDelegate {
 
     private func setExportButtonsEnabled(_ enabled: Bool) {
         exportButtons.forEach { $0.isEnabled = enabled }
+    }
+
+    @objc func checkForUpdates() {
+        guard updateButton?.isEnabled != false else { return }
+        updateButton?.isEnabled = false
+        statusLabel.stringValue = "Buscando actualizaciones en GitHub…"
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.updateButton?.isEnabled = true }
+            do {
+                switch try await AppUpdateChecker.check() {
+                case .available(let currentVersion, let latestVersion, let url):
+                    self.statusLabel.stringValue = "Hay una nueva versión disponible · \(latestVersion)"
+                    self.showUpdateAlert(
+                        title: "Hay una nueva versión de Lector MD",
+                        detail: "La versión \(latestVersion) está publicada en GitHub. Tienes instalada la versión \(currentVersion).",
+                        actionTitle: "Ver actualización",
+                        actionURL: url
+                    )
+                case .upToDate(let currentVersion):
+                    self.statusLabel.stringValue = "Lector MD está al día · \(currentVersion)"
+                    self.showUpdateAlert(
+                        title: "Lector MD está al día",
+                        detail: "Tienes instalada la versión \(currentVersion)."
+                    )
+                case .noPublishedRelease:
+                    self.statusLabel.stringValue = "Todavía no hay versiones instalables publicadas"
+                    self.showUpdateAlert(
+                        title: "Todavía no hay versiones publicadas",
+                        detail: "El repositorio aún no tiene un instalador publicado en GitHub Releases. Cuando se publique una versión, podrás encontrarla desde aquí.",
+                        actionTitle: "Ver GitHub",
+                        actionURL: AppUpdateChecker.releasesURL
+                    )
+                }
+            } catch {
+                self.statusLabel.stringValue = "No se pudo consultar GitHub"
+                self.showUpdateAlert(
+                    title: "No se pudo buscar actualizaciones",
+                    detail: error.localizedDescription
+                )
+            }
+        }
+    }
+
+    private func showUpdateAlert(title: String, detail: String, actionTitle: String? = nil, actionURL: URL? = nil) {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = title
+        alert.informativeText = detail
+        if let actionTitle {
+            alert.addButton(withTitle: actionTitle)
+            alert.addButton(withTitle: "Cerrar")
+        } else {
+            alert.addButton(withTitle: "Aceptar")
+        }
+        if alert.runModal() == .alertFirstButtonReturn, let actionURL {
+            NSWorkspace.shared.open(actionURL)
+        }
     }
 
     @objc func pasteAndConvert() {
@@ -1023,6 +1088,7 @@ private final class MainController: NSViewController, WKNavigationDelegate {
     }
 }
 
+@MainActor
 private final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
     private var menuCreated = false
@@ -1070,6 +1136,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "Acerca de Lector MD", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(NSMenuItem.separator())
+        let updateItem = appMenu.addItem(withTitle: "Buscar actualizaciones…", action: #selector(checkForUpdates), keyEquivalent: "")
+        updateItem.target = self
+        appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(withTitle: "Salir de Lector MD", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
         let fileItem = NSMenuItem(); menu.addItem(fileItem)
@@ -1107,6 +1176,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func saveMarkdownDocument() {
         (window?.contentViewController as? MainController)?.saveMarkdown()
+    }
+
+    @objc private func checkForUpdates() {
+        ensureWindow()
+        (window?.contentViewController as? MainController)?.checkForUpdates()
     }
 }
 

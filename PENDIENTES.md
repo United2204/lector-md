@@ -15,3 +15,4 @@ Esta opción complementa la importación directa descrita arriba: sirve para con
 ## Pendiente
 
 - Añadir OCR para extraer texto de PDF escaneados.
+- Publicar versiones instalables firmadas y notarizadas para habilitar la descarga e instalación automática desde la app.
