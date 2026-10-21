@@ -36,6 +36,6 @@ El paquete `.app` se genera en `.build/Lector MD.app`.
 
 Los PDF escaneados que no contienen texto seleccionable requieren OCR; esa función todavía no está disponible.
 
-El buscador de actualizaciones revisa GitHub Releases. Para ofrecer una actualización descargable hay que publicar allí un paquete de la app; la instalación automática requerirá además firma y notarización.
+El buscador de actualizaciones revisa GitHub Releases y abre la página de descarga cuando encuentra una versión nueva. La instalación automática todavía está pendiente: por ahora hay que descargar la app desde GitHub y reemplazar la instalada. Los paquetes públicos se distribuyen firmados y notarizados.
 
 Consulta [PENDIENTES.md](PENDIENTES.md) para la idea de próxima función.

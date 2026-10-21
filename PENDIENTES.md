@@ -15,4 +15,4 @@ Esta opción complementa la importación directa descrita arriba: sirve para con
 ## Pendiente
 
 - Añadir OCR para extraer texto de PDF escaneados.
-- Publicar versiones instalables firmadas y notarizadas para habilitar la descarga e instalación automática desde la app.
+- Automatizar la descarga, verificación e instalación de actualizaciones desde la app. El botón actual detecta nuevas versiones y abre la página de GitHub Releases.
